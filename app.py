@@ -97,7 +97,7 @@ def check_domain_smart(domain):
 
 input_text = st.text_area("Insert domain list (1 per line)", height=300)
 
-if st.button("🚀 Run Smart Check"):
+if st.button("Run Check"):
     if not input_text.strip():
         st.warning("The list is empty.")
     else:
