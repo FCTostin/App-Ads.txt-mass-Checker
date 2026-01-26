@@ -5,14 +5,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 import re
 
-# Настройка страницы
 st.set_page_config(
-    page_title="App-ads.txt Checker", 
+    page_title="App-ads.txt Checker Pro", 
     layout="wide", 
     page_icon="🛡️"
 )
 
-# Стилизация интерфейса
 st.markdown("""
     <style>
     .stApp { background-color: #0e1117; color: #fafafa; }
@@ -21,17 +19,28 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🛡️ App-ads.txt Checker")
-st.markdown("Verifies file availability and counts **valid IAB ad records**.")
+st.title("🛡️ App-ads.txt Checker Pro")
+st.markdown("Verifies file availability and counts **valid IAB ad records** (Bypasses WAF/Cloudflare).")
 
+# Максимально полный User-Agent и заголовки как у реального Chrome
 LIVE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 def get_session():
     session = requests.Session()
-    session.headers.update({
+    headers = {
         'User-Agent': LIVE_UA,
-        'Accept': 'text/plain,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    })
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Cache-Control': 'max-age=0',
+    }
+    session.headers.update(headers)
     return session
 
 def clean_domain(url_input):
@@ -46,32 +55,20 @@ def clean_domain(url_input):
         return url_input
 
 def count_valid_lines(content):
-    """
-    Парсит контент app-ads.txt согласно стандартам IAB.
-    Устойчив к BOM, разным кодировкам и невидимым символам.
-    """
     valid_count = 0
-    # Удаляем Byte Order Mark (BOM), если он есть
-    content = content.replace('\ufeff', '')
-    # Нормализуем переносы строк
+    content = content.replace('\ufeff', '') # Remove BOM
     lines = content.replace('\r\n', '\n').replace('\r', '\n').splitlines()
     
     for line in lines:
-        # Убираем комментарии (все, что после #)
         clean_line = line.split('#')[0].strip()
-        
         if not clean_line:
             continue
             
-        # Разбиваем строку по запятым
         parts = [p.strip() for p in clean_line.split(',')]
         
-        # Запись валидна, если в ней есть: Domain, Account ID, Type (DIRECT/RESELLER)
         if len(parts) >= 3:
-            # Очищаем поле типа записи от возможных невидимых символов
-            # Оставляем только буквы A-Z
+            # Строгая очистка типа записи
             relationship = re.sub(r'[^A-Z]', '', parts[2].upper())
-            
             if relationship in ["DIRECT", "RESELLER"]:
                 valid_count += 1
                 
@@ -79,45 +76,59 @@ def count_valid_lines(content):
 
 def check_domain_smart(domain):
     session = get_session()
-    # По спецификации app-ads.txt должен быть в корне или в подпапке (но чаще в корне)
-    urls_to_try = [f"https://{domain}/app-ads.txt", f"http://{domain}/app-ads.txt"]
+    
+    # Генерируем варианты: https, http, и обязательно www версии
+    urls_to_try = [
+        f"https://{domain}/app-ads.txt",
+        f"https://www.{domain}/app-ads.txt", # Часто помогает с редиректами
+        f"http://{domain}/app-ads.txt",
+        f"http://www.{domain}/app-ads.txt"
+    ]
+    
+    # Удаляем дубликаты, если домен уже был введен с www
+    urls_to_try = list(dict.fromkeys(urls_to_try))
     
     for url in urls_to_try:
         try:
-            response = session.get(url, timeout=12, allow_redirects=True, verify=True)
+            # Verify=False часто нужен для старых корпоративных серверов
+            response = session.get(url, timeout=15, allow_redirects=True, verify=False)
             
-            # Если SSL ошибка — пробуем без проверки сертификата (некоторые экономят на SSL)
+            # Проверяем не только 200, но и контент
             if response.status_code == 200:
-                # Принудительно определяем кодировку, чтобы не было "кракозябр"
                 response.encoding = response.apparent_encoding
                 content = response.text
                 
-                # Если сервер вернул HTML вместо текстового файла (частая ошибка 404-редиректов)
-                if "<html" in content.lower()[:200] or "<!doctype" in content.lower()[:200]:
+                # Пропускаем HTML заглушки
+                if "<html" in content.lower()[:300] or "<!doctype" in content.lower()[:300]:
                     continue 
                 
                 valid_lines = count_valid_lines(content)
-                return url, "Valid", valid_lines
                 
-        except requests.exceptions.SSLError:
-            try:
-                # Повторная попытка без проверки SSL
-                response = session.get(url, timeout=10, allow_redirects=True, verify=False)
-                if response.status_code == 200:
-                    response.encoding = response.apparent_encoding
-                    content = response.text
-                    if "<html" not in content.lower()[:200]:
-                        valid_lines = count_valid_lines(content)
-                        return url, "Valid", valid_lines
-            except:
-                pass
+                # Если нашли 0 строк, возможно файл пустой, но ссылка рабочая.
+                # Но лучше поискать дальше, вдруг другая ссылка даст результат.
+                if valid_lines > 0:
+                    return url, "Valid", valid_lines
+                
+                # Если дошли до конца и ничего не нашли, вернем этот результат как "Valid (Empty)"
+                # Но пока сохраним его как кандидата
+                
         except Exception:
             pass
             
+    # Если мы прошли цикл, но нашли файл с 0 строк (но доступный), нужно вернуть его
+    # Повторяем быстрый проход для поиска хотя бы доступного файла
+    for url in urls_to_try:
+        try:
+            response = session.get(url, timeout=5, allow_redirects=True, verify=False)
+            if response.status_code == 200 and "<html" not in response.text.lower()[:300]:
+                 valid_lines = count_valid_lines(response.text)
+                 return url, "Valid (Warning)", valid_lines
+        except:
+            pass
+
     return f"https://{domain}/app-ads.txt", "Error / Not Found", 0
 
-# Интерфейс Streamlit
-input_text = st.text_area("Insert domain list (1 per line)", height=300, placeholder="example.com\nhyperhippo.com")
+input_text = st.text_area("Insert domain list (1 per line)", height=300, placeholder="hyperhippo.com")
 
 if st.button("Run Check"):
     if not input_text.strip():
@@ -136,8 +147,7 @@ if st.button("Run Check"):
         status_text = st.empty()
         unsorted_results = []
         
-        # Используем ThreadPoolExecutor для ускорения (20 потоков)
-        with ThreadPoolExecutor(max_workers=20) as executor:
+        with ThreadPoolExecutor(max_workers=10) as executor: # Снизил потоки для стабильности
             future_to_idx = {
                 executor.submit(check_domain_smart, domain): idx 
                 for idx, domain in tasks
@@ -168,14 +178,13 @@ if st.button("Run Check"):
         progress_bar.empty()
         status_text.empty()
         
-        # Сортируем обратно в порядке ввода
         df = pd.DataFrame(unsorted_results)
         df = df.sort_values(by="Original_Index").drop(columns=["Original_Index"])
         
         st.subheader("Results")
         
         def highlight_row(val):
-            if val == "Valid":
+            if "Valid" in val:
                 return 'color: #4CAF50; font-weight: bold'
             return 'color: #FF5252; font-weight: bold'
             
@@ -185,10 +194,9 @@ if st.button("Run Check"):
             hide_index=True,
             column_config={
                 "App-ads Link": st.column_config.LinkColumn("App-ads Link"),
-                "Valid Lines": st.column_config.NumberColumn("Valid Lines (IAB)", help="Number of records matching IAB standards")
+                "Valid Lines": st.column_config.NumberColumn("Valid Lines (IAB)")
             }
         )
         
-        # Скачивание отчета
         csv_data = df.to_csv(index=False).encode('utf-8')
         st.download_button("💾 Download Report (CSV)", csv_data, "app_ads_check_results.csv", "text/csv")
