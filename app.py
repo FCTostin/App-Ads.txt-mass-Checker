@@ -103,7 +103,7 @@ def check_domain_smart(domain):
                 status = "Valid" if valid_lines > 0 else "File Empty (0 lines)"
                 return url, status, valid_lines
             
-    return f"https://{domain}/app-ads.txt", "Error / Not Found", 0
+    return f"https://{domain}/app-ads.txt", "Error", 0
 
 # --- Интерфейс ---
 input_text = st.text_area(
