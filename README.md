@@ -2,7 +2,7 @@
 
 A high-performance, Streamlit-based tool designed to validate the accessibility and compliance of `app-ads.txt` files against **IAB standards**.
 
-## 🚀 Key Features
+## Key Features
 
 * **Smart Protocol Discovery:** Automatically attempts connection via `HTTPS` and fallbacks to `HTTP` with SSL-error handling.
 * **IAB Record Parsing:** Doesn't just check for file existence—it counts valid entries (checks for `DIRECT`/`RESELLER` relationship types).
@@ -10,7 +10,7 @@ A high-performance, Streamlit-based tool designed to validate the accessibility 
 * **Concurrent Processing:** Uses `ThreadPoolExecutor` to scan dozens of domains in seconds.
 * **Clean Export:** Direct CSV export for easy integration into ad-ops workflows.
 
-## 🛠️ Installation
+## Installation
 
 1. **Clone the repository:**
 ```bash
@@ -35,11 +35,11 @@ streamlit run app.py
 
 
 
-## 📋 Input Format
+## Input Format
 
 Simply paste a list of domains or URLs. The tool automatically cleans the input, extracting the core domain to locate the `/app-ads.txt` path.
 
-## ⚙️ Tech Stack
+## Tech Stack
 
 * **Streamlit** (UI/Frontend)
 * **Pandas** (Data handling)
