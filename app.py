@@ -3,15 +3,16 @@ import pandas as pd
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
-import time
 import re
 
+# Настройка страницы
 st.set_page_config(
     page_title="App-ads.txt Checker", 
     layout="wide", 
     page_icon="🛡️"
 )
 
+# Стилизация интерфейса
 st.markdown("""
     <style>
     .stApp { background-color: #0e1117; color: #fafafa; }
@@ -35,46 +36,64 @@ def get_session():
 
 def clean_domain(url_input):
     url_input = url_input.strip().replace('"', '').replace("'", "")
-    
     if not url_input.startswith(("http://", "https://")):
         url_input = "http://" + url_input
     try:
         parsed = urlparse(url_input)
-        return parsed.netloc if parsed.netloc else parsed.path.split('/')[0]
+        domain = parsed.netloc if parsed.netloc else parsed.path.split('/')[0]
+        return domain.lower().strip()
     except:
         return url_input
 
 def count_valid_lines(content):
+    """
+    Парсит контент app-ads.txt согласно стандартам IAB.
+    Устойчив к BOM, разным кодировкам и невидимым символам.
+    """
     valid_count = 0
-    lines = content.splitlines()
+    # Удаляем Byte Order Mark (BOM), если он есть
+    content = content.replace('\ufeff', '')
+    # Нормализуем переносы строк
+    lines = content.replace('\r\n', '\n').replace('\r', '\n').splitlines()
     
     for line in lines:
+        # Убираем комментарии (все, что после #)
         clean_line = line.split('#')[0].strip()
         
         if not clean_line:
             continue
             
+        # Разбиваем строку по запятым
         parts = [p.strip() for p in clean_line.split(',')]
         
+        # Запись валидна, если в ней есть: Domain, Account ID, Type (DIRECT/RESELLER)
         if len(parts) >= 3:
-            relationship = parts[2].upper()
-            if "DIRECT" in relationship or "RESELLER" in relationship:
+            # Очищаем поле типа записи от возможных невидимых символов
+            # Оставляем только буквы A-Z
+            relationship = re.sub(r'[^A-Z]', '', parts[2].upper())
+            
+            if relationship in ["DIRECT", "RESELLER"]:
                 valid_count += 1
                 
     return valid_count
 
 def check_domain_smart(domain):
     session = get_session()
+    # По спецификации app-ads.txt должен быть в корне или в подпапке (но чаще в корне)
     urls_to_try = [f"https://{domain}/app-ads.txt", f"http://{domain}/app-ads.txt"]
     
     for url in urls_to_try:
         try:
-            response = session.get(url, timeout=10, allow_redirects=True)
+            response = session.get(url, timeout=12, allow_redirects=True, verify=True)
             
+            # Если SSL ошибка — пробуем без проверки сертификата (некоторые экономят на SSL)
             if response.status_code == 200:
+                # Принудительно определяем кодировку, чтобы не было "кракозябр"
+                response.encoding = response.apparent_encoding
                 content = response.text
                 
-                if "<!doctype html" in content.lower() or "<html" in content.lower()[:200]:
+                # Если сервер вернул HTML вместо текстового файла (частая ошибка 404-редиректов)
+                if "<html" in content.lower()[:200] or "<!doctype" in content.lower()[:200]:
                     continue 
                 
                 valid_lines = count_valid_lines(content)
@@ -82,10 +101,12 @@ def check_domain_smart(domain):
                 
         except requests.exceptions.SSLError:
             try:
+                # Повторная попытка без проверки SSL
                 response = session.get(url, timeout=10, allow_redirects=True, verify=False)
                 if response.status_code == 200:
+                    response.encoding = response.apparent_encoding
                     content = response.text
-                    if "<!doctype html" not in content.lower():
+                    if "<html" not in content.lower()[:200]:
                         valid_lines = count_valid_lines(content)
                         return url, "Valid", valid_lines
             except:
@@ -93,9 +114,10 @@ def check_domain_smart(domain):
         except Exception:
             pass
             
-    return urls_to_try[0], "Error", 0
+    return f"https://{domain}/app-ads.txt", "Error / Not Found", 0
 
-input_text = st.text_area("Insert domain list (1 per line)", height=300)
+# Интерфейс Streamlit
+input_text = st.text_area("Insert domain list (1 per line)", height=300, placeholder="example.com\nhyperhippo.com")
 
 if st.button("Run Check"):
     if not input_text.strip():
@@ -114,6 +136,7 @@ if st.button("Run Check"):
         status_text = st.empty()
         unsorted_results = []
         
+        # Используем ThreadPoolExecutor для ускорения (20 потоков)
         with ThreadPoolExecutor(max_workers=20) as executor:
             future_to_idx = {
                 executor.submit(check_domain_smart, domain): idx 
@@ -125,7 +148,7 @@ if st.button("Run Check"):
                 idx = future_to_idx[future]
                 try:
                     url, status, lines = future.result()
-                except:
+                except Exception as e:
                     orig_domain = tasks[idx][1]
                     url = f"https://{orig_domain}/app-ads.txt"
                     status = "Error"
@@ -145,6 +168,7 @@ if st.button("Run Check"):
         progress_bar.empty()
         status_text.empty()
         
+        # Сортируем обратно в порядке ввода
         df = pd.DataFrame(unsorted_results)
         df = df.sort_values(by="Original_Index").drop(columns=["Original_Index"])
         
@@ -165,5 +189,6 @@ if st.button("Run Check"):
             }
         )
         
+        # Скачивание отчета
         csv_data = df.to_csv(index=False).encode('utf-8')
         st.download_button("💾 Download Report (CSV)", csv_data, "app_ads_check_results.csv", "text/csv")
